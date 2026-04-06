@@ -11,12 +11,21 @@ import (
 	"github.com/Dilgo-dev/cronk/internal/crontab"
 )
 
+type view int
+
+const (
+	viewList view = iota
+	viewForm
+)
+
 type Model struct {
+	view   view
 	jobs   []crontab.Job
 	cursor int
 	err    error
 	width  int
 	height int
+	form   formModel
 }
 
 func New() Model {
@@ -26,11 +35,36 @@ func New() Model {
 
 func (m Model) Init() tea.Cmd { return nil }
 
+func (m *Model) reload() {
+	jobs, err := crontab.Load()
+	m.jobs, m.err = jobs, err
+	if m.cursor >= len(m.jobs) {
+		m.cursor = max(0, len(m.jobs)-1)
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-	case tea.KeyMsg:
+		return m, nil
+	}
+
+	if m.view == viewForm {
+		var cmd tea.Cmd
+		var res formResult
+		m.form, cmd, res = m.form.Update(msg)
+		if res.cancel {
+			m.view = viewList
+		}
+		if res.saved {
+			m.view = viewList
+			m.reload()
+		}
+		return m, cmd
+	}
+
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -49,10 +83,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = len(m.jobs) - 1
 			}
 		case "r":
-			jobs, err := crontab.Load()
-			m.jobs, m.err = jobs, err
-			if m.cursor >= len(m.jobs) {
-				m.cursor = max(0, len(m.jobs)-1)
+			m.reload()
+		case "a":
+			m.form = newForm(nil)
+			m.view = viewForm
+		case "e":
+			if len(m.jobs) > 0 {
+				j := m.jobs[m.cursor]
+				m.form = newForm(&j)
+				m.view = viewForm
 			}
 		}
 	}
@@ -71,6 +110,9 @@ var (
 )
 
 func (m Model) View() string {
+	if m.view == viewForm {
+		return m.form.View()
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cronk") + "\n\n")
 
@@ -111,7 +153,7 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  g/G top/bottom  r reload  q quit"))
+	b.WriteString(helpStyle.Render("j/k move  g/G top/bottom  a add  e edit  r reload  q quit"))
 	return b.String()
 }
 

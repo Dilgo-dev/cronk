@@ -31,9 +31,47 @@ var parser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cr
 
 var ErrNoCrontabBinary = errors.New("crontab binary not found in PATH (install cron, e.g. on NixOS add `cron` to your packages)")
 
+func ParseSchedule(s string) (cron.Schedule, error) {
+	return parser.Parse(strings.TrimSpace(s))
+}
+
+func ValidateSchedule(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("empty")
+	}
+	if s == "@reboot" {
+		return nil
+	}
+	_, err := parser.Parse(s)
+	return err
+}
+
+func NextRunsFor(s string, n int, from time.Time) ([]time.Time, error) {
+	sched, err := ParseSchedule(s)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]time.Time, 0, n)
+	t := from
+	for i := 0; i < n; i++ {
+		t = sched.Next(t)
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func Load() ([]Job, error) {
+	raw, err := LoadRaw()
+	if err != nil {
+		return nil, err
+	}
+	return parse(raw), nil
+}
+
+func LoadRaw() (string, error) {
 	if _, err := exec.LookPath("crontab"); err != nil {
-		return nil, ErrNoCrontabBinary
+		return "", ErrNoCrontabBinary
 	}
 	cmd := exec.Command("crontab", "-l")
 	var stdout, stderr bytes.Buffer
@@ -42,11 +80,49 @@ func Load() ([]Job, error) {
 	if err := cmd.Run(); err != nil {
 		msg := strings.ToLower(stderr.String())
 		if msg == "" || strings.Contains(msg, "no crontab") {
-			return nil, nil
+			return "", nil
 		}
-		return nil, errors.New(strings.TrimSpace(stderr.String()))
+		return "", errors.New(strings.TrimSpace(stderr.String()))
 	}
-	return parse(stdout.String()), nil
+	return stdout.String(), nil
+}
+
+func Write(content string) error {
+	if _, err := exec.LookPath("crontab"); err != nil {
+		return ErrNoCrontabBinary
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	cmd := exec.Command("crontab", "-")
+	cmd.Stdin = strings.NewReader(content)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	}
+	return nil
+}
+
+func AppendJob(raw, line string) string {
+	if raw != "" && !strings.HasSuffix(raw, "\n") {
+		raw += "\n"
+	}
+	return raw + line + "\n"
+}
+
+func ReplaceLine(raw, oldLine, newLine string) string {
+	lines := strings.Split(raw, "\n")
+	for i, l := range lines {
+		if l == oldLine {
+			lines[i] = newLine
+			return strings.Join(lines, "\n")
+		}
+	}
+	return AppendJob(raw, newLine)
 }
 
 func parse(content string) []Job {
@@ -112,7 +188,7 @@ func parseLine(s string) (Job, bool) {
 			j.Reboot = true
 			return j, true
 		}
-		sched, err := parser.Parse(s[:len(schedule)])
+		sched, err := parser.Parse(schedule)
 		if err != nil {
 			return Job{}, false
 		}
