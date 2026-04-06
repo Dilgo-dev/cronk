@@ -1,0 +1,6 @@
+/cronk
+/dist/
+*.test
+*.out
+.idea/
+.vscode/
