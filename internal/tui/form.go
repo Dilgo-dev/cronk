@@ -42,16 +42,25 @@ func newForm(edit *crontab.Job) formModel {
 	for i := range fields {
 		ti := textinput.New()
 		ti.CharLimit = 40
-		ti.Width = 12
+		ti.Width = 14
 		ti.SetValue(defaults[i])
+		ti.Prompt = "│ "
+		ti.PromptStyle = lipgloss.NewStyle().Foreground(colorDim)
+		ti.TextStyle = lipgloss.NewStyle().Foreground(colorText)
+		ti.Cursor.Style = lipgloss.NewStyle().Foreground(colorPink)
 		fields[i] = formField{label: labels[i], kind: kinds[i], input: ti}
 	}
 	fields[0].input.Focus()
+	fields[0].input.PromptStyle = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
 
 	cmd := textinput.New()
 	cmd.CharLimit = 500
 	cmd.Width = 60
 	cmd.Placeholder = "echo hello"
+	cmd.Prompt = "│ "
+	cmd.PromptStyle = lipgloss.NewStyle().Foreground(colorDim)
+	cmd.TextStyle = lipgloss.NewStyle().Foreground(colorText)
+	cmd.Cursor.Style = lipgloss.NewStyle().Foreground(colorPink)
 	if edit != nil {
 		cmd.SetValue(edit.Command)
 	}
@@ -83,15 +92,21 @@ func (f *formModel) applyPreset(p string) {
 
 func (f *formModel) focusNext(delta int) {
 	total := len(f.fields) + 1
+	dimPrompt := lipgloss.NewStyle().Foreground(colorDim)
+	activePrompt := lipgloss.NewStyle().Foreground(colorPink).Bold(true)
 	for i := range f.fields {
 		f.fields[i].input.Blur()
+		f.fields[i].input.PromptStyle = dimPrompt
 	}
 	f.command.Blur()
+	f.command.PromptStyle = dimPrompt
 	f.focus = (f.focus + delta + total) % total
 	if f.focus < len(f.fields) {
 		f.fields[f.focus].input.Focus()
+		f.fields[f.focus].input.PromptStyle = activePrompt
 	} else {
 		f.command.Focus()
+		f.command.PromptStyle = activePrompt
 	}
 }
 
@@ -123,7 +138,7 @@ func (f formModel) Update(msg tea.Msg) (formModel, tea.Cmd, formResult) {
 		case "ctrl+w":
 			f.applyPreset("@weekly")
 			return f, nil, formResult{}
-		case "ctrl+m":
+		case "ctrl+t":
 			f.applyPreset("@monthly")
 			return f, nil, formResult{}
 		}
@@ -164,47 +179,58 @@ func (f *formModel) save() error {
 	return crontab.Write(updated)
 }
 
-var (
-	formTitle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Padding(0, 1)
-	fieldLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Width(14)
-	fieldDesc    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7CB342")).Italic(true)
-	fieldErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Italic(true)
-	previewTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Bold(true)
-	previewLine  = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
-)
-
-func (f formModel) View() string {
+func (f formModel) View(width int) string {
 	var b strings.Builder
 	title := "add job"
 	if f.editing != nil {
 		title = "edit job"
 	}
-	b.WriteString(formTitle.Render("cronk - "+title) + "\n\n")
+	b.WriteString(topBar(width, title, "") + "\n")
+	b.WriteString(divider(width) + "\n\n")
 
+	b.WriteString("  " + stSection.Render("◆ schedule") + "\n\n")
 	for _, fl := range f.fields {
 		desc := crontab.DescribeField(fl.kind, fl.input.Value())
-		descStyled := fieldDesc.Render(desc)
-		b.WriteString(fieldLabel.Render(fl.label) + fl.input.View() + "  " + descStyled + "\n")
+		row := lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			stFieldLabel.Render(fl.label),
+			fl.input.View(),
+			stFieldDesc.Render(desc),
+		)
+		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(fieldLabel.Render("command") + f.command.View() + "\n\n")
+	b.WriteString("\n  " + stSection.Render("◆ command") + "\n\n")
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, stFieldLabel.Render("command"), f.command.View()) + "\n\n")
 
 	schedule := f.scheduleString()
 	if err := crontab.ValidateSchedule(schedule); err != nil {
-		b.WriteString(fieldErr.Render("invalid schedule: "+err.Error()) + "\n\n")
+		b.WriteString("  " + stError.Render("✗ invalid schedule: "+err.Error()) + "\n\n")
 	} else {
-		b.WriteString(previewTitle.Render("next 5 runs:") + "\n")
+		b.WriteString("  " + stSection.Render("◆ next 5 runs") + "\n\n")
 		runs, _ := crontab.NextRunsFor(schedule, 5, time.Now())
-		for _, r := range runs {
-			b.WriteString(previewLine.Render("  "+r.Format("Mon 2006-01-02 15:04")) + "\n")
+		for i, r := range runs {
+			marker := stMuted.Render("    ")
+			if i == 0 {
+				marker = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("  → ")
+			}
+			b.WriteString(marker + stValue.Render(r.Format("Mon 2006-01-02 15:04")) + "\n")
 		}
 		b.WriteString("\n")
 	}
 
 	if f.saveError != "" {
-		b.WriteString(fieldErr.Render("save error: "+f.saveError) + "\n\n")
+		b.WriteString("  " + stError.Render("✗ "+f.saveError) + "\n\n")
 	}
 
-	b.WriteString(helpStyle.Render("tab next  ctrl+s save  esc cancel  ctrl+h/d/w/m presets (hourly/daily/weekly/monthly)"))
+	b.WriteString(divider(width) + "\n")
+	b.WriteString(statusBar(width,
+		[2]string{"tab", "next"},
+		[2]string{"^s", "save"},
+		[2]string{"esc", "cancel"},
+		[2]string{"^h", "hourly"},
+		[2]string{"^d", "daily"},
+		[2]string{"^w", "weekly"},
+		[2]string{"^t", "monthly"},
+	))
 	return b.String()
 }

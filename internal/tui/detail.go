@@ -10,30 +10,35 @@ import (
 )
 
 type detailModel struct {
-	job crontab.Job
+	job        crontab.Job
+	dateFormat string
 }
 
-var (
-	detailLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Width(16)
-	detailValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
-	detailHead  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00"))
-)
-
-func (d detailModel) View() string {
-	var b strings.Builder
-	b.WriteString(formTitle.Render("cronk - job detail") + "\n\n")
-
-	b.WriteString(detailLabel.Render("schedule") + detailValue.Render(d.job.Schedule) + "\n")
-	b.WriteString(detailLabel.Render("command") + detailValue.Render(d.job.Command) + "\n")
-	status := "enabled"
-	if d.job.Disabled {
-		status = "disabled"
+func (d detailModel) fmtDate(t time.Time) string {
+	if d.dateFormat == "" {
+		return t.Format("Mon 2006-01-02 15:04")
 	}
-	b.WriteString(detailLabel.Render("status") + detailValue.Render(status) + "\n\n")
+	return t.Format(d.dateFormat)
+}
 
-	b.WriteString(detailHead.Render("decoded fields") + "\n")
+func (d detailModel) View(width int) string {
+	var b strings.Builder
+	b.WriteString(topBar(width, "job detail", "") + "\n")
+	b.WriteString(divider(width) + "\n\n")
+
+	var left strings.Builder
+	left.WriteString("  " + stSection.Render("◆ overview") + "\n\n")
+	left.WriteString(stFieldLabel.Render("schedule") + stValueAccent.Render(d.job.Schedule) + "\n")
+	left.WriteString(stFieldLabel.Render("command") + stValue.Render(d.job.Command) + "\n")
+	statusVal := stOk.Render("● enabled")
+	if d.job.Disabled {
+		statusVal = stMuted.Render("○ disabled")
+	}
+	left.WriteString(stFieldLabel.Render("status") + statusVal + "\n\n")
+
+	left.WriteString("  " + stSection.Render("◆ decoded") + "\n\n")
 	if d.job.Reboot {
-		b.WriteString("  runs once at system boot\n")
+		left.WriteString("  " + stMuted.Render("runs once at system boot") + "\n")
 	} else {
 		parts := strings.Fields(d.job.Schedule)
 		labels := []string{"minute", "hour", "day of month", "month", "day of week"}
@@ -41,28 +46,41 @@ func (d detailModel) View() string {
 		if len(parts) == 5 {
 			for i, p := range parts {
 				desc := crontab.DescribeField(kinds[i], p)
-				b.WriteString("  " + detailLabel.Render(labels[i]) + detailValue.Render(p) + fieldDesc.Render("  "+desc) + "\n")
+				row := lipgloss.JoinHorizontal(
+					lipgloss.Top,
+					stFieldLabel.Render(labels[i]),
+					lipgloss.NewStyle().Foreground(colorYellow).Render(pad(p, 6)),
+					stFieldDesc.Render(desc),
+				)
+				left.WriteString(row + "\n")
 			}
-		} else {
-			b.WriteString("  " + d.job.Schedule + "\n")
 		}
 	}
-	b.WriteString("\n")
 
-	b.WriteString(detailHead.Render("next 10 runs") + "\n")
+	var right strings.Builder
+	right.WriteString(stSection.Render("◆ next 10 runs") + "\n\n")
 	if d.job.Reboot {
-		b.WriteString("  on reboot\n")
+		right.WriteString(stMuted.Render("on reboot") + "\n")
 	} else {
 		runs, err := crontab.NextRunsFor(d.job.Schedule, 10, time.Now())
 		if err != nil {
-			b.WriteString(fieldErr.Render("  cannot compute: "+err.Error()) + "\n")
+			right.WriteString(stError.Render("cannot compute: "+err.Error()) + "\n")
 		} else {
-			for _, r := range runs {
-				b.WriteString(previewLine.Render("  "+r.Format("Mon 2006-01-02 15:04")) + "\n")
+			for i, r := range runs {
+				marker := stMuted.Render("  ")
+				if i == 0 {
+					marker = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("→ ")
+				}
+				right.WriteString(marker + stValue.Render(d.fmtDate(r)) + "\n")
 			}
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("esc/q back"))
+	leftBlock := lipgloss.NewStyle().Width((clampWidth(width) / 2) - 2).Render(left.String())
+	rightBlock := lipgloss.NewStyle().Padding(0, 0, 0, 2).Render(right.String())
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftBlock, rightBlock) + "\n\n")
+
+	b.WriteString(divider(width) + "\n")
+	b.WriteString(statusBar(width, [2]string{"esc/q", "back"}))
 	return b.String()
 }

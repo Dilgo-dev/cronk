@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Dilgo-dev/cronk/internal/config"
 	"github.com/Dilgo-dev/cronk/internal/crontab"
 )
 
@@ -32,16 +33,22 @@ type Model struct {
 	searching bool
 	search    textinput.Model
 	query     string
+	settings  config.Settings
 }
 
 func New() Model {
+	settings, _ := config.Load()
 	jobs, err := crontab.Load()
 	si := textinput.New()
-	si.Prompt = "/"
+	si.Prompt = "  search "
 	si.CharLimit = 100
 	si.Width = 40
-	return Model{jobs: jobs, err: err, search: si}
+	si.PromptStyle = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
+	si.TextStyle = lipgloss.NewStyle().Foreground(colorText)
+	return Model{jobs: jobs, err: err, search: si, width: 100, settings: settings}
 }
+
+func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) filtered() []int {
 	if m.query == "" {
@@ -60,8 +67,6 @@ func (m Model) filtered() []int {
 	}
 	return out
 }
-
-func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) selected() (crontab.Job, bool) {
 	idx := m.filtered()
@@ -152,6 +157,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "/":
+			m.searching = true
+			m.search.Focus()
+			return m, nil
+		case "esc":
+			if m.query != "" {
+				m.query = ""
+				m.search.SetValue("")
+				m.cursor = 0
+			}
 		case "j", "down":
 			n := len(m.filtered())
 			if m.cursor < n-1 {
@@ -170,16 +185,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			m.reload()
-		case "/":
-			m.searching = true
-			m.search.Focus()
-			return m, nil
-		case "esc":
-			if m.query != "" {
-				m.query = ""
-				m.search.SetValue("")
-				m.cursor = 0
-			}
 		case " ":
 			if j, ok := m.selected(); ok {
 				if err := toggleJob(j); err != nil {
@@ -206,36 +211,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFAF00")).Padding(0, 1)
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#888888"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00")).Bold(true)
-	disabledStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555")).Strikethrough(true)
-	statusOK      = lipgloss.NewStyle().Foreground(lipgloss.Color("#7CB342"))
-	statusOff     = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
-)
-
 func (m Model) View() string {
 	if m.view == viewForm {
-		return m.form.View()
+		return m.form.View(m.width)
 	}
 	if m.view == viewDetail {
-		return m.detail.View()
+		m.detail.dateFormat = m.settings.DateFormat
+		return m.detail.View(m.width)
 	}
+	return m.listView()
+}
+
+func (m Model) listView() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cronk") + "\n\n")
+
+	count := len(m.jobs)
+	right := fmt.Sprintf("%d jobs", count)
+	if m.query != "" {
+		right = fmt.Sprintf("%d / %d", len(m.filtered()), count)
+	}
+	b.WriteString(topBar(m.width, "crontab manager", right) + "\n")
+	b.WriteString(divider(m.width) + "\n\n")
 
 	if m.err != nil {
-		b.WriteString(errorStyle.Render("error: "+m.err.Error()) + "\n")
-		b.WriteString(helpStyle.Render("press q to quit, r to retry"))
+		b.WriteString("  " + stError.Render("✗ error") + "\n")
+		b.WriteString("  " + stMuted.Render(m.err.Error()) + "\n\n")
+		b.WriteString(divider(m.width) + "\n")
+		b.WriteString(statusBar(m.width, [2]string{"r", "retry"}, [2]string{"q", "quit"}))
 		return b.String()
 	}
 
-	if len(m.jobs) == 0 {
-		b.WriteString(helpStyle.Render("no jobs in your crontab. press a to add one.") + "\n\n")
-		b.WriteString(helpStyle.Render("a add  q quit  r reload"))
+	if count == 0 {
+		b.WriteString("  " + stSection.Render("no jobs yet") + "\n")
+		b.WriteString("  " + stMuted.Render("press ") + stKey.Render(" a ") + stMuted.Render(" to add your first cron job") + "\n\n")
+		b.WriteString(divider(m.width) + "\n")
+		b.WriteString(statusBar(m.width, [2]string{"a", "add"}, [2]string{"r", "reload"}, [2]string{"q", "quit"}))
 		return b.String()
 	}
 
@@ -243,38 +253,105 @@ func (m Model) View() string {
 		b.WriteString(m.search.View() + "\n\n")
 	}
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-20s %-30s %-20s %s", "SCHEDULE", "COMMAND", "NEXT RUN", "STATUS")) + "\n")
+	cw := columnWidths(m.width)
+	b.WriteString(renderHeader(cw) + "\n")
+	b.WriteString(stDivider.Render(strings.Repeat("╌", cw.total())) + "\n")
 
 	now := time.Now()
 	idxs := m.filtered()
 	if len(idxs) == 0 {
-		b.WriteString(helpStyle.Render("  no match") + "\n")
+		b.WriteString("  " + stMuted.Italic(true).Render("no match") + "\n")
 	}
 	for i, idx := range idxs {
 		j := m.jobs[idx]
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-		schedule := truncate(j.Schedule, 20)
-		command := truncate(j.Command, 30)
-		next := nextRunStr(j, now)
-		status := statusOK.Render("enabled")
-		if j.Disabled {
-			status = statusOff.Render("disabled")
-		}
-		line := fmt.Sprintf("%s%-20s %-30s %-20s %s", cursor, schedule, command, next, status)
-		if j.Disabled {
-			line = disabledStyle.Render(line)
-		} else if i == m.cursor {
-			line = selectedStyle.Render(line)
-		}
-		b.WriteString(line + "\n")
+		b.WriteString(renderRow(j, i == m.cursor, now, cw) + "\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  space toggle  / search  r reload  q quit"))
+	b.WriteString("\n" + divider(m.width) + "\n")
+	b.WriteString(statusBar(m.width,
+		[2]string{"j/k", "move"},
+		[2]string{"⏎", "detail"},
+		[2]string{"a", "add"},
+		[2]string{"e", "edit"},
+		[2]string{"␣", "toggle"},
+		[2]string{"/", "search"},
+		[2]string{"q", "quit"},
+	))
 	return b.String()
+}
+
+type colWidths struct {
+	gutter, schedule, command, next, status int
+}
+
+func (c colWidths) total() int {
+	return c.gutter + c.schedule + 2 + c.command + 2 + c.next + 2 + c.status
+}
+
+func columnWidths(termWidth int) colWidths {
+	termWidth = clampWidth(termWidth)
+	cw := colWidths{gutter: 2, schedule: 18, next: 18, status: 10}
+	used := cw.gutter + cw.schedule + 2 + cw.next + 2 + cw.status + 2
+	cw.command = termWidth - used
+	if cw.command < 20 {
+		cw.command = 20
+	}
+	return cw
+}
+
+func renderHeader(cw colWidths) string {
+	return strings.Repeat(" ", cw.gutter) +
+		stColHeader.Render(pad("SCHEDULE", cw.schedule)) + "  " +
+		stColHeader.Render(pad("COMMAND", cw.command)) + "  " +
+		stColHeader.Render(pad("NEXT RUN", cw.next)) + "  " +
+		stColHeader.Render(pad("STATUS", cw.status))
+}
+
+func renderRow(j crontab.Job, selected bool, now time.Time, cw colWidths) string {
+	schedule := truncate(j.Schedule, cw.schedule)
+	command := truncate(j.Command, cw.command)
+	next := nextRunStr(j, now)
+	if lipgloss.Width(next) > cw.next {
+		next = truncate(next, cw.next)
+	}
+
+	var statusText string
+	if j.Disabled {
+		statusText = "○ off"
+	} else {
+		statusText = "● on"
+	}
+	statusText = pad(statusText, cw.status)
+
+	gutter := "  "
+	if selected {
+		gutter = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render("▎ ")
+	}
+
+	body := pad(schedule, cw.schedule) + "  " +
+		pad(command, cw.command) + "  " +
+		pad(next, cw.next) + "  "
+
+	if selected {
+		body = stRowSelected.Render(body + statusText)
+		return gutter + body
+	}
+
+	if j.Disabled {
+		body = stRowDisabled.Render(body)
+		statusText = stBadgeOff.Render(statusText)
+	} else {
+		body = stRow.Render(body)
+		statusText = stBadgeOn.Render(statusText)
+	}
+	return gutter + body + statusText
+}
+
+func pad(s string, n int) string {
+	if lipgloss.Width(s) >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-lipgloss.Width(s))
 }
 
 func nextRunStr(j crontab.Job, from time.Time) string {
@@ -307,13 +384,13 @@ func humanDuration(d time.Duration) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if lipgloss.Width(s) <= n {
 		return s
 	}
 	if n < 4 {
 		return s[:n]
 	}
-	return s[:n-1] + "..."
+	return s[:n-1] + "…"
 }
 
 func max(a, b int) int {
