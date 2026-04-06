@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -20,22 +21,55 @@ const (
 )
 
 type Model struct {
-	view   view
-	jobs   []crontab.Job
-	cursor int
-	err    error
-	width  int
-	height int
-	form   formModel
-	detail detailModel
+	view      view
+	jobs      []crontab.Job
+	cursor    int
+	err       error
+	width     int
+	height    int
+	form      formModel
+	detail    detailModel
+	searching bool
+	search    textinput.Model
+	query     string
 }
 
 func New() Model {
 	jobs, err := crontab.Load()
-	return Model{jobs: jobs, err: err}
+	si := textinput.New()
+	si.Prompt = "/"
+	si.CharLimit = 100
+	si.Width = 40
+	return Model{jobs: jobs, err: err, search: si}
+}
+
+func (m Model) filtered() []int {
+	if m.query == "" {
+		out := make([]int, len(m.jobs))
+		for i := range m.jobs {
+			out[i] = i
+		}
+		return out
+	}
+	q := strings.ToLower(m.query)
+	var out []int
+	for i, j := range m.jobs {
+		if strings.Contains(strings.ToLower(j.Schedule), q) || strings.Contains(strings.ToLower(j.Command), q) {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (m Model) Init() tea.Cmd { return nil }
+
+func (m Model) selected() (crontab.Job, bool) {
+	idx := m.filtered()
+	if len(idx) == 0 || m.cursor >= len(idx) {
+		return crontab.Job{}, false
+	}
+	return m.jobs[idx[m.cursor]], true
+}
 
 func toggleJob(j crontab.Job) error {
 	raw, err := crontab.LoadRaw()
@@ -93,12 +127,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.searching {
+		if km, ok := msg.(tea.KeyMsg); ok {
+			switch km.String() {
+			case "esc":
+				m.searching = false
+				m.search.SetValue("")
+				m.query = ""
+				m.cursor = 0
+				return m, nil
+			case "enter":
+				m.searching = false
+				return m, nil
+			}
+		}
+		var cmd tea.Cmd
+		m.search, cmd = m.search.Update(msg)
+		m.query = m.search.Value()
+		m.cursor = 0
+		return m, cmd
+	}
+
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "j", "down":
-			if m.cursor < len(m.jobs)-1 {
+			n := len(m.filtered())
+			if m.cursor < n-1 {
 				m.cursor++
 			}
 		case "k", "up":
@@ -108,30 +164,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g", "home":
 			m.cursor = 0
 		case "G", "end":
-			if len(m.jobs) > 0 {
-				m.cursor = len(m.jobs) - 1
+			n := len(m.filtered())
+			if n > 0 {
+				m.cursor = n - 1
 			}
 		case "r":
 			m.reload()
+		case "/":
+			m.searching = true
+			m.search.Focus()
+			return m, nil
+		case "esc":
+			if m.query != "" {
+				m.query = ""
+				m.search.SetValue("")
+				m.cursor = 0
+			}
 		case " ":
-			if len(m.jobs) > 0 {
-				if err := toggleJob(m.jobs[m.cursor]); err != nil {
+			if j, ok := m.selected(); ok {
+				if err := toggleJob(j); err != nil {
 					m.err = err
 				} else {
 					m.reload()
 				}
 			}
 		case "enter":
-			if len(m.jobs) > 0 {
-				m.detail = detailModel{job: m.jobs[m.cursor]}
+			if j, ok := m.selected(); ok {
+				m.detail = detailModel{job: j}
 				m.view = viewDetail
 			}
 		case "a":
 			m.form = newForm(nil)
 			m.view = viewForm
 		case "e":
-			if len(m.jobs) > 0 {
-				j := m.jobs[m.cursor]
+			if j, ok := m.selected(); ok {
 				m.form = newForm(&j)
 				m.view = viewForm
 			}
@@ -168,15 +234,24 @@ func (m Model) View() string {
 	}
 
 	if len(m.jobs) == 0 {
-		b.WriteString(helpStyle.Render("no jobs in your crontab. press a to add one (todo).") + "\n\n")
-		b.WriteString(helpStyle.Render("q quit  r reload"))
+		b.WriteString(helpStyle.Render("no jobs in your crontab. press a to add one.") + "\n\n")
+		b.WriteString(helpStyle.Render("a add  q quit  r reload"))
 		return b.String()
+	}
+
+	if m.searching || m.query != "" {
+		b.WriteString(m.search.View() + "\n\n")
 	}
 
 	b.WriteString(headerStyle.Render(fmt.Sprintf("  %-20s %-30s %-20s %s", "SCHEDULE", "COMMAND", "NEXT RUN", "STATUS")) + "\n")
 
 	now := time.Now()
-	for i, j := range m.jobs {
+	idxs := m.filtered()
+	if len(idxs) == 0 {
+		b.WriteString(helpStyle.Render("  no match") + "\n")
+	}
+	for i, idx := range idxs {
+		j := m.jobs[idx]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
@@ -198,7 +273,7 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  space toggle  r reload  q quit"))
+	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  space toggle  / search  r reload  q quit"))
 	return b.String()
 }
 
