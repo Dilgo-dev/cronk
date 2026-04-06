@@ -37,6 +37,23 @@ func New() Model {
 
 func (m Model) Init() tea.Cmd { return nil }
 
+func toggleJob(j crontab.Job) error {
+	raw, err := crontab.LoadRaw()
+	if err != nil {
+		return err
+	}
+	var newLine string
+	if j.Disabled {
+		trimmed := strings.TrimLeft(j.Raw, " \t")
+		trimmed = strings.TrimPrefix(trimmed, "#")
+		newLine = strings.TrimLeft(trimmed, " \t")
+	} else {
+		newLine = "# " + j.Raw
+	}
+	updated := crontab.ReplaceLine(raw, j.Raw, newLine)
+	return crontab.Write(updated)
+}
+
 func (m *Model) reload() {
 	jobs, err := crontab.Load()
 	m.jobs, m.err = jobs, err
@@ -96,6 +113,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			m.reload()
+		case " ":
+			if len(m.jobs) > 0 {
+				if err := toggleJob(m.jobs[m.cursor]); err != nil {
+					m.err = err
+				} else {
+					m.reload()
+				}
+			}
 		case "enter":
 			if len(m.jobs) > 0 {
 				m.detail = detailModel{job: m.jobs[m.cursor]}
@@ -173,7 +198,7 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  r reload  q quit"))
+	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  space toggle  r reload  q quit"))
 	return b.String()
 }
 
