@@ -16,6 +16,7 @@ type view int
 const (
 	viewList view = iota
 	viewForm
+	viewDetail
 )
 
 type Model struct {
@@ -26,6 +27,7 @@ type Model struct {
 	width  int
 	height int
 	form   formModel
+	detail detailModel
 }
 
 func New() Model {
@@ -64,6 +66,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.view == viewDetail {
+		if msg, ok := msg.(tea.KeyMsg); ok {
+			switch msg.String() {
+			case "esc", "q":
+				m.view = viewList
+			}
+		}
+		return m, nil
+	}
+
 	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -84,6 +96,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			m.reload()
+		case "enter":
+			if len(m.jobs) > 0 {
+				m.detail = detailModel{job: m.jobs[m.cursor]}
+				m.view = viewDetail
+			}
 		case "a":
 			m.form = newForm(nil)
 			m.view = viewForm
@@ -112,6 +129,9 @@ var (
 func (m Model) View() string {
 	if m.view == viewForm {
 		return m.form.View()
+	}
+	if m.view == viewDetail {
+		return m.detail.View()
 	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cronk") + "\n\n")
@@ -153,7 +173,7 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k move  g/G top/bottom  a add  e edit  r reload  q quit"))
+	b.WriteString(helpStyle.Render("j/k move  enter detail  a add  e edit  r reload  q quit"))
 	return b.String()
 }
 
