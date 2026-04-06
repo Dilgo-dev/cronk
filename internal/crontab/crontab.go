@@ -4,12 +4,61 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 )
+
+const maxBackups = 10
+
+func backupDir() (string, error) {
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cfg, "cronk", "backups"), nil
+}
+
+func writeBackup(content string) error {
+	dir, err := backupDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	name := "crontab-" + time.Now().Format("20060102-150405")
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		return err
+	}
+	return pruneBackups(dir)
+}
+
+func pruneBackups(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "crontab-") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) <= maxBackups {
+		return nil
+	}
+	for _, n := range names[:len(names)-maxBackups] {
+		_ = os.Remove(filepath.Join(dir, n))
+	}
+	return nil
+}
 
 type Job struct {
 	Raw      string
@@ -93,6 +142,11 @@ func Write(content string) error {
 	}
 	if content != "" && !strings.HasSuffix(content, "\n") {
 		content += "\n"
+	}
+	if current, err := LoadRaw(); err == nil {
+		if berr := writeBackup(current); berr != nil {
+			return errors.New("backup failed: " + berr.Error())
+		}
 	}
 	cmd := exec.Command("crontab", "-")
 	cmd.Stdin = strings.NewReader(content)
